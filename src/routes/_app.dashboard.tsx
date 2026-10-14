@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { Radar } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { Loader2, Radar } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { CandleChart, ChartLegend } from '@/components/CandleChart'
 import { SignalCard } from '@/components/SignalCard'
 import {
   DirectionTag,
   IntegrationPill,
+  LiveBadge,
   PageHeader,
   Panel,
   PreviewBadge,
@@ -14,17 +15,13 @@ import {
   Sparkline,
   Stat,
 } from '@/components/ui'
-import {
-  getPreviewCandles,
-  getPreviewQuotes,
-  getPreviewSignals,
-  INTEGRATIONS,
-  PREVIEW_AS_OF,
-  runPreviewScan,
-} from '@/lib/fixtures'
+import { getPreviewSignals, INTEGRATIONS } from '@/lib/fixtures'
 import { cn, fmtPrice, fmtTime } from '@/lib/format'
 import { INSTRUMENTS, TIMEFRAMES, type Timeframe } from '@/lib/instruments'
+import { getQuotes, MARKET_PROVIDER, scanMarket, type LiveScan, type Quote } from '@/lib/market'
 import { useSettings } from '@/lib/settings'
+
+const REFRESH_MS = 60_000
 
 export const Route = createFileRoute('/_app/dashboard')({
   component: Dashboard,
@@ -34,10 +31,41 @@ function Dashboard() {
   const { settings } = useSettings()
   const [symbol, setSymbol] = useState('EUR/USD')
   const [tf, setTf] = useState<Timeframe>('H1')
-  const quotes = useMemo(getPreviewQuotes, [])
   const signals = useMemo(getPreviewSignals, [])
-  const candles = useMemo(() => getPreviewCandles(symbol, tf), [symbol, tf])
-  const analysis = useMemo(() => runPreviewScan(symbol, tf, settings.minScore), [symbol, tf, settings.minScore])
+  const [quotes, setQuotes] = useState<Quote[] | null>(null)
+  const [quotesAt, setQuotesAt] = useState<string | null>(null)
+  const [live, setLive] = useState<LiveScan | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const pairsKey = settings.pairs.join(',')
+
+  // Live quotes, refreshed every minute while the page is open.
+  useEffect(() => {
+    let alive = true
+    const load = () =>
+      getQuotes({ data: { symbols: settings.pairs } })
+        .then((r) => { if (alive) { setQuotes(r.quotes); setQuotesAt(r.fetchedAt) } })
+        .catch(() => alive && setQuotes((q) => q ?? []))
+    load()
+    const t = setInterval(load, REFRESH_MS)
+    return () => { alive = false; clearInterval(t) }
+  }, [pairsKey])
+
+  // Live candles + engine analysis for the selected market.
+  useEffect(() => {
+    let alive = true
+    setLive(null)
+    setError(null)
+    const load = () =>
+      scanMarket({ data: { symbol, timeframe: tf, minScore: settings.minScore } })
+        .then((r) => { if (alive) { setLive(r); setError(null) } })
+        .catch((e: unknown) => alive && setError(e instanceof Error ? e.message : 'Market data unavailable'))
+    load()
+    const t = setInterval(load, REFRESH_MS)
+    return () => { alive = false; clearInterval(t) }
+  }, [symbol, tf, settings.minScore])
+
+  const analysis = live?.analysis ?? null
+  const qualified = !!analysis && analysis.decision !== 'NO_TRADE'
   const active = signals.filter((s) => s.state === 'PENDING' || s.state === 'TRIGGERED')
   const tz = settings.timezone
 
@@ -45,7 +73,7 @@ function Dashboard() {
     <>
       <PageHeader
         title="Market dashboard"
-        subtitle={<>Overview of monitored pairs, latest qualified signals and system health. Sample data as of {fmtTime(PREVIEW_AS_OF, tz)}.</>}
+        subtitle={<>Live overview of monitored markets from {MARKET_PROVIDER}{quotesAt ? <> · updated {fmtTime(quotesAt, tz)}</> : null}. Refreshes every minute.</>}
         right={
           <Link to="/scan" className="inline-flex items-center gap-2 rounded-lg bg-signal-cyan px-4 py-2.5 text-sm font-semibold text-ink-950 hover:bg-cyan-300">
             <Radar size={16} /> SCAN MARKET
@@ -53,16 +81,15 @@ function Dashboard() {
         }
       />
 
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-warn/30 bg-warn/5 px-4 py-3 text-sm text-ink-300">
-        <PreviewBadge className="mt-0.5 shrink-0" />
-        <p>
-          Prices, candles and signals on this screen are sample data for exploring the interface. Live data appears once the market-data feed is connected — see <Link to="/help" className="text-signal-cyan underline">Help & setup</Link>.
-        </p>
-      </div>
-
       {/* Market overview */}
       <div className="-mx-4 mb-5 flex snap-x gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:grid sm:grid-cols-4 sm:overflow-visible sm:px-0 xl:grid-cols-8">
-        {quotes.map((q) => (
+        {quotes === null && (
+          <div className="panel col-span-full flex items-center gap-2 p-4 text-sm text-ink-400"><Loader2 size={16} className="animate-spin" /> Loading live prices…</div>
+        )}
+        {quotes?.length === 0 && (
+          <div className="panel col-span-full p-4 text-sm text-ink-400">Live prices are temporarily unavailable. Retrying every minute.</div>
+        )}
+        {quotes?.map((q) => (
           <button
             key={q.symbol}
             onClick={() => setSymbol(q.symbol)}
@@ -86,7 +113,7 @@ function Dashboard() {
 
       <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
         <Panel
-          title={<span className="flex items-center gap-2">{symbol} · {tf} <PreviewBadge /></span>}
+          title={<span className="flex items-center gap-2">{symbol} · {tf} <LiveBadge /></span>}
           right={
             <div className="flex gap-1">
               {TIMEFRAMES.map((t) => (
@@ -108,13 +135,23 @@ function Dashboard() {
               <Select label="" value={symbol} onChange={setSymbol} options={INSTRUMENTS.map((i) => ({ value: i.symbol, label: i.symbol }))} />
             </div>
           </div>
-          <CandleChart candles={candles} symbol={symbol} levels={analysis.levels} height={360} />
+          {error && !live ? (
+            <div className="flex h-[360px] items-center justify-center p-6 text-center text-sm text-ink-400">Live candles could not be loaded ({error}). Retrying every minute.</div>
+          ) : !live ? (
+            <div className="flex h-[360px] items-center justify-center"><Loader2 size={28} className="animate-spin text-signal-cyan" /></div>
+          ) : (
+            <CandleChart candles={live.candles} symbol={symbol} levels={analysis?.levels} height={360} />
+          )}
           <div className="mt-3 grid grid-cols-2 gap-4 border-t border-ink-800 px-2 pt-3 sm:grid-cols-5 sm:px-0">
-            <Stat label="Bias" value={<DirectionTag dir={analysis.bias} />} />
-            <Stat label="RSI 14" value={analysis.indicators.rsi14.toFixed(1)} />
-            <Stat label="ATR 14" value={fmtPrice(symbol, analysis.indicators.atr14)} />
-            <Stat label="Score" value={`${analysis.score}/100`} />
-            <Stat label="Setup" value={<span className={analysis.qualified ? 'text-bull' : 'text-ink-400'}>{analysis.qualified ? 'Qualified' : 'None'}</span>} />
+            <Stat label="Trend (V1)" value={analysis ? <DirectionTag dir={analysis.v1.direction} /> : '—'} />
+            <Stat label="RSI 14" value={analysis?.indicators.rsi14?.toFixed(1) ?? '—'} />
+            <Stat label="ATR 14" value={analysis?.indicators.atr14 != null ? fmtPrice(symbol, analysis.indicators.atr14) : '—'} />
+            <Stat label="Score" value={analysis ? `${analysis.score}/100` : '—'} />
+            <Stat
+              label="Setup"
+              value={<span className={qualified ? 'text-bull' : 'text-ink-400'}>{analysis ? (qualified ? `Qualified ${analysis.decision}` : 'None') : '—'}</span>}
+              hint={analysis ? `Last closed candle ${fmtTime(analysis.dataAsOf, tz)}` : undefined}
+            />
           </div>
         </Panel>
 
@@ -148,7 +185,7 @@ function Dashboard() {
       </div>
 
       <div className="mt-8 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Active signals <span className="num text-ink-400">({active.length})</span></h2>
+        <h2 className="flex items-center gap-2 text-lg font-semibold">Active signals <span className="num text-ink-400">({active.length})</span> <PreviewBadge /></h2>
         <Link to="/signals" className="text-sm text-signal-cyan hover:underline">All signals →</Link>
       </div>
       {active.length === 0 ? (

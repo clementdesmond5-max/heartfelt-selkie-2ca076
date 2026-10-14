@@ -431,9 +431,9 @@ export interface Integration {
   envVars: string[]
 }
 
-/** Nothing is connected yet — the real status endpoint arrives with the backend milestones. */
+/** Market data is live (src/lib/market.ts); the rest arrives with the backend milestones. */
 export const INTEGRATIONS: Integration[] = [
-  { id: 'market', name: 'Market data (Twelve Data)', purpose: 'Real OHLC candles for scans and signal tracking', state: 'SETUP_REQUIRED', envVars: ['TWELVE_DATA_API_KEY'] },
+  { id: 'market', name: 'Market data (Yahoo Finance)', purpose: 'Real closed OHLC candles for the dashboard and manual scans', state: 'CONNECTED', envVars: ['No key needed'] },
   { id: 'db', name: 'Database', purpose: 'Signals, status events, scan logs, backtests', state: 'SETUP_REQUIRED', envVars: ['Provisioned automatically on Netlify'] },
   { id: 'scheduler', name: 'Automatic scanner', purpose: 'Scheduled function, every 5 minutes', state: 'SETUP_REQUIRED', envVars: ['SCANNER_SECRET'] },
   { id: 'telegram', name: 'Telegram bot', purpose: 'Phone alerts while the site is closed', state: 'SETUP_REQUIRED', envVars: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET'] },

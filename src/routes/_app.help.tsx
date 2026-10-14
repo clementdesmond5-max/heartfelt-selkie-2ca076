@@ -50,13 +50,11 @@ function HelpPage() {
       </p>
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
-        <Panel title="Get a Twelve Data key">
-          <ol className="list-decimal space-y-1.5 pl-4 text-sm text-ink-300">
-            <li>Create a free account at twelvedata.com.</li>
-            <li>Copy your API key from the dashboard.</li>
-            <li>Add it as <code className="num text-signal-cyan">TWELVE_DATA_API_KEY</code> in Netlify.</li>
-          </ol>
-          <p className="mt-3 text-xs text-ink-400">The free tier allows 8 requests/minute and 800/day; the scanner batches and caches requests to stay within it.</p>
+        <Panel title="Market data">
+          <p className="text-sm text-ink-300">
+            Live candles come from Yahoo Finance on the server — no key is needed. Only closed candles are analysed; the bar that is still forming is ignored.
+          </p>
+          <p className="mt-3 text-xs text-ink-400">Metals and energy use the front-month futures contract as the price source, and spreads are modelled because the free feed has no bid/ask.</p>
         </Panel>
         <Panel title="Create the Telegram bot">
           <ol className="list-decimal space-y-1.5 pl-4 text-sm text-ink-300">

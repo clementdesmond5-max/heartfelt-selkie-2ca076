@@ -20,6 +20,21 @@ export function Logo({ compact = false }: { compact?: boolean }) {
   )
 }
 
+export function LiveBadge({ className }: { className?: string }) {
+  return (
+    <span
+      title="Real closed candles from the market-data feed."
+      className={cn(
+        'inline-flex items-center gap-1 rounded-md border border-bull/40 bg-bull/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-bull',
+        className,
+      )}
+    >
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-bull" />
+      Live
+    </span>
+  )
+}
+
 export function PreviewBadge({ className }: { className?: string }) {
   return (
     <span

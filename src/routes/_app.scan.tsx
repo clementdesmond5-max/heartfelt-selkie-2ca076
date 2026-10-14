@@ -1,12 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Check, Loader2, Radar, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CandleChart, ChartLegend } from '@/components/CandleChart'
 import { LevelsTable, ScoreBreakdown } from '@/components/SignalCard'
-import { DirectionTag, PageHeader, Panel, PreviewBadge, Select, Stat, StrategyPill } from '@/components/ui'
-import { getPreviewCandles, runPreviewScan, type ScanResult } from '@/lib/fixtures'
+import { DirectionTag, LiveBadge, PageHeader, Panel, Select, Stat, StrategyPill } from '@/components/ui'
+import type { Analysis } from '@/engine/analyze'
 import { cn, fmtPrice, fmtTime } from '@/lib/format'
 import { INSTRUMENTS, TIMEFRAMES, type Timeframe } from '@/lib/instruments'
+import { MARKET_PROVIDER, scanMarket, type LiveScan } from '@/lib/market'
 import { useSettings } from '@/lib/settings'
 
 export const Route = createFileRoute('/_app/scan')({
@@ -29,44 +30,73 @@ function ScanPage() {
   const [symbol, setSymbol] = useState('EUR/USD')
   const [tf, setTf] = useState<Timeframe>('H1')
   const [step, setStep] = useState(-1)
-  const [result, setResult] = useState<ScanResult | null>(null)
+  const [result, setResult] = useState<LiveScan | null>(null)
+  const [pending, setPending] = useState<LiveScan | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setInterval>>(undefined)
-  const scanning = step >= 0 && step < STEPS.length
+  const run = useRef(0)
+  const scanning = step >= 0 && (step < STEPS.length || !pending) && !error
 
   useEffect(() => () => clearInterval(timer.current), [])
   useEffect(() => {
-    if (step !== STEPS.length) return
+    if (step < STEPS.length || !pending) return
     clearInterval(timer.current)
-    setResult(runPreviewScan(symbol, tf, settings.minScore))
-  }, [step, symbol, tf, settings.minScore])
+    setResult(pending)
+  }, [step, pending])
 
   const reset = () => {
+    run.current++
     clearInterval(timer.current)
     setResult(null)
+    setPending(null)
+    setError(null)
     setStep(-1)
   }
 
   const scan = () => {
-    setResult(null)
+    reset()
+    const id = run.current
     setStep(0)
-    clearInterval(timer.current)
+    // Step animation runs alongside the real request; the result shows once both finish.
     timer.current = setInterval(() => setStep((s) => Math.min(s + 1, STEPS.length)), 180)
+    scanMarket({ data: { symbol, timeframe: tf, minScore: settings.minScore } })
+      .then((r) => id === run.current && setPending(r))
+      .catch((e: unknown) => {
+        if (id !== run.current) return
+        clearInterval(timer.current)
+        setError(e instanceof Error ? e.message : 'Market data unavailable')
+      })
   }
 
-  const sweep = useMemo(
-    () =>
-      INSTRUMENTS.flatMap((i) =>
-        (['M30', 'H1', 'H4'] as Timeframe[]).map((t) => runPreviewScan(i.symbol, t, settings.minScore)),
-      ),
-    [settings.minScore],
-  )
+  // ── Sweep of all monitored pairs (on demand, a few requests at a time) ──
+  const [sweep, setSweep] = useState<Analysis[]>([])
+  const [sweepTf, setSweepTf] = useState<Timeframe>('H1')
+  const [sweeping, setSweeping] = useState(false)
+  const [sweepAt, setSweepAt] = useState<string | null>(null)
+  const runSweep = async () => {
+    setSweeping(true)
+    setSweep([])
+    const pairs = settings.pairs.length ? settings.pairs : INSTRUMENTS.filter((i) => i.enabledByDefault).map((i) => i.symbol)
+    const out: Analysis[] = []
+    for (let i = 0; i < pairs.length; i += 4) {
+      const batch = await Promise.all(
+        pairs.slice(i, i + 4).map((p) =>
+          scanMarket({ data: { symbol: p, timeframe: sweepTf, minScore: settings.minScore } }).then((r) => r.analysis).catch(() => null),
+        ),
+      )
+      out.push(...batch.filter((a): a is Analysis => !!a))
+      setSweep([...out])
+    }
+    setSweepAt(new Date().toISOString())
+    setSweeping(false)
+  }
 
   return (
     <>
       <PageHeader
         title="Manual scanner"
         subtitle="Runs the same rule set as the automatic scanner. A signal appears only when every quality and safety check passes."
-        right={<PreviewBadge />}
+        right={<LiveBadge />}
       />
 
       <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
@@ -114,10 +144,16 @@ function ScanPage() {
         </Panel>
 
         <div className="min-w-0 space-y-5">
-          {!result && !scanning && (
+          {!result && !scanning && !error && (
             <div className="panel grid-bg flex min-h-[320px] flex-col items-center justify-center p-8 text-center">
               <Radar size={36} className="text-ink-600" />
               <p className="mt-3 max-w-sm text-sm text-ink-400">Choose an instrument and timeframe, then tap <span className="font-semibold text-ink-100">SCAN MARKET</span>.</p>
+            </div>
+          )}
+          {error && (
+            <div className="panel border-bear/40 p-5">
+              <div className="text-sm font-bold tracking-widest text-bear">SCAN FAILED</div>
+              <p className="mt-2 text-sm text-ink-300">Live candles could not be loaded ({error}). No signal is produced without fresh data — try again in a moment.</p>
             </div>
           )}
           {scanning && (
@@ -125,18 +161,43 @@ function ScanPage() {
               <Loader2 size={32} className="animate-spin text-signal-cyan" />
             </div>
           )}
-          {result && <ScanResultView r={result} timeZone={settings.timezone} />}
+          {result && !result.analysis && (
+            <div className="panel p-5 text-sm text-ink-400">No closed candles were returned for {symbol} on {tf}.</div>
+          )}
+          {result?.analysis && <ScanResultView live={result} r={result.analysis} timeZone={settings.timezone} />}
         </div>
       </div>
 
-      <Panel className="mt-8" title={<span className="flex items-center gap-2">All pairs at a glance <PreviewBadge /></span>} bodyClass="p-0">
+      <Panel
+        className="mt-8"
+        title="All monitored pairs"
+        right={
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1">
+              {(['M30', 'H1', 'H4'] as Timeframe[]).map((t) => (
+                <button key={t} disabled={sweeping} onClick={() => setSweepTf(t)} className={cn('num rounded px-2 py-1 text-xs', sweepTf === t ? 'bg-signal-cyan/15 text-signal-cyan' : 'text-ink-400 hover:text-ink-100')}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <button onClick={runSweep} disabled={sweeping} className="inline-flex items-center gap-1.5 rounded-lg border border-signal-cyan/50 px-3 py-1.5 text-xs font-semibold text-signal-cyan hover:bg-signal-cyan/10 disabled:opacity-60">
+              {sweeping ? <Loader2 size={13} className="animate-spin" /> : <Radar size={13} />}
+              {sweeping ? `Scanning ${sweep.length}/${settings.pairs.length || '…'}` : 'Scan all'}
+            </button>
+          </div>
+        }
+        bodyClass="p-0"
+      >
+        {sweep.length === 0 && !sweeping ? (
+          <p className="p-6 text-center text-sm text-ink-400">Tap <span className="font-semibold text-ink-100">Scan all</span> to run the live rule set across every pair enabled in Settings.</p>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[560px] text-sm">
             <thead>
               <tr className="label border-b border-ink-800 text-left">
                 <th className="px-4 py-2.5 font-medium">Pair</th>
                 <th className="px-2 py-2.5 font-medium">TF</th>
-                <th className="px-2 py-2.5 font-medium">Bias</th>
+                <th className="px-2 py-2.5 font-medium">Trend (V1)</th>
                 <th className="px-2 py-2.5 font-medium">RSI</th>
                 <th className="px-2 py-2.5 text-right font-medium">Score</th>
                 <th className="px-4 py-2.5 text-right font-medium">Result</th>
@@ -147,27 +208,30 @@ function ScanPage() {
                 <tr key={r.symbol + r.timeframe} className="border-b border-ink-800/60 last:border-0">
                   <td className="num px-4 py-2 text-ink-100">{r.symbol}</td>
                   <td className="num px-2 py-2 text-ink-400">{r.timeframe}</td>
-                  <td className="px-2 py-2"><DirectionTag dir={r.bias} /></td>
-                  <td className="num px-2 py-2 text-ink-300">{r.indicators.rsi14.toFixed(0)}</td>
+                  <td className="px-2 py-2"><DirectionTag dir={r.v1.direction} /></td>
+                  <td className="num px-2 py-2 text-ink-300">{r.indicators.rsi14?.toFixed(0) ?? '—'}</td>
                   <td className="num px-2 py-2 text-right text-ink-100">{r.score}</td>
                   <td className="px-4 py-2 text-right text-xs">
-                    {r.qualified ? <span className="font-semibold text-bull">QUALIFIED</span> : <span className="text-ink-400">No valid setup</span>}
+                    {r.decision !== 'NO_TRADE' ? <span className="font-semibold text-bull">QUALIFIED {r.decision}</span> : <span className="text-ink-400">No valid setup</span>}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {sweepAt && <p className="border-t border-ink-800 px-4 py-2 text-[11px] text-ink-400">Live {MARKET_PROVIDER} candles · scanned {fmtTime(sweepAt, settings.timezone)}</p>}
         </div>
+        )}
       </Panel>
     </>
   )
 }
 
-function ScanResultView({ r, timeZone }: { r: ScanResult; timeZone: string }) {
-  const candles = getPreviewCandles(r.symbol, r.timeframe)
+function ScanResultView({ live, r, timeZone }: { live: LiveScan; r: Analysis; timeZone: string }) {
+  const qualified = r.decision !== 'NO_TRADE'
+  const px = (v: number | null) => (v == null ? '—' : fmtPrice(r.symbol, v))
   return (
     <div className="rise space-y-5">
-      {r.qualified && r.levels ? (
+      {qualified && r.levels ? (
         <div className="panel border-bull/40 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -175,7 +239,7 @@ function ScanResultView({ r, timeZone }: { r: ScanResult; timeZone: string }) {
               <DirectionTag dir={r.levels.direction} size="lg" />
               <span className="num text-sm text-ink-300">{r.symbol} · {r.timeframe}</span>
             </div>
-            <div className="flex items-center gap-2"><StrategyPill status={r.strategyStatus} /><PreviewBadge /></div>
+            <StrategyPill status={r.strategyStatus} />
           </div>
           <p className="mt-3 text-sm leading-relaxed text-ink-300">{r.explanation}</p>
           {r.strategyStatus !== 'VERIFIED' && (
@@ -192,13 +256,16 @@ function ScanResultView({ r, timeZone }: { r: ScanResult; timeZone: string }) {
       )}
 
       <Panel title={`${r.symbol} · ${r.timeframe}`} right={<ChartLegend />} bodyClass="p-2 sm:p-4">
-        <CandleChart candles={candles} symbol={r.symbol} levels={r.levels} height={320} />
+        <CandleChart candles={live.candles} symbol={r.symbol} levels={r.levels} height={320} />
         <div className="mt-3 grid grid-cols-2 gap-4 border-t border-ink-800 px-2 pt-3 sm:grid-cols-4 sm:px-0">
-          <Stat label="EMA 20" value={fmtPrice(r.symbol, r.indicators.ema20)} />
-          <Stat label="EMA 50" value={fmtPrice(r.symbol, r.indicators.ema50)} />
-          <Stat label="EMA 200" value={fmtPrice(r.symbol, r.indicators.ema200)} />
-          <Stat label="Data as of" value={<span className="text-sm">{fmtTime(r.dataAsOf, timeZone)}</span>} hint={`${r.candlesUsed} candles`} />
+          <Stat label="Last close" value={px(r.lastClose)} />
+          <Stat label="EMA 20" value={px(r.indicators.ema20)} />
+          <Stat label="EMA 200" value={px(r.indicators.ema200)} />
+          <Stat label="Last closed candle" value={<span className="text-sm">{fmtTime(r.dataAsOf, timeZone)}</span>} hint={`${r.candlesUsed} candles · fetched ${fmtTime(live.fetchedAt, timeZone)}`} />
         </div>
+        <p className="mt-3 px-2 text-[11px] text-ink-400 sm:px-0">
+          Source: {live.provider}, closed candles only. {live.providerNote}
+        </p>
       </Panel>
 
       <div className="grid gap-5 md:grid-cols-2">
