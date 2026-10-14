@@ -8,7 +8,7 @@
 // should fabricate prices, signals or performance numbers.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { atr, ema, last, rsi, type Candle } from './indicators'
+import { atr, ema, last, rsi, type Candle } from '../engine/indicators'
 import { getInstrument, INSTRUMENTS, TIMEFRAMES, type Timeframe } from './instruments'
 
 /** Fixed anchor so preview candles are identical on server and client. Friday 20:00 UTC. */
@@ -27,7 +27,7 @@ const BASE: Record<string, { price: number; drift: number }> = {
   'NZD/USD': { price: 0.605, drift: 0 },
   'EUR/JPY': { price: 161.9, drift: -0.00005 },
 }
-const VOL: Record<Timeframe, number> = { M15: 0.00032, M30: 0.00045, H1: 0.00065, H4: 0.0013 }
+const VOL: Record<Timeframe, number> = { M15: 0.00032, M30: 0.00045, H1: 0.00065, H4: 0.0013, D1: 0.003 }
 
 function hash(s: string) {
   let h = 2166136261
@@ -183,7 +183,7 @@ export const MODELLED_SPREAD_PIPS: Record<string, number> = {
   'AUD/USD': 1.0, 'USD/CHF': 1.3, 'NZD/USD': 1.5, 'EUR/JPY': 1.6,
 }
 
-const higherTf: Record<Timeframe, Timeframe> = { M15: 'H1', M30: 'H1', H1: 'H4', H4: 'H4' }
+const higherTf: Record<Timeframe, Timeframe> = { M15: 'H1', M30: 'H1', H1: 'H4', H4: 'H4', D1: 'D1' }
 
 export function runPreviewScan(symbol: string, tf: Timeframe, minScore = 80): ScanResult {
   const inst = getInstrument(symbol)
