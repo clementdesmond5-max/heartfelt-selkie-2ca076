@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
-import type { Candle } from '@/lib/indicators'
-import { ema } from '@/lib/indicators'
+import type { Candle } from '@/engine/indicators'
+import { ema } from '@/engine/indicators'
 import type { Levels } from '@/lib/fixtures'
 import { getInstrument } from '@/lib/instruments'
 
